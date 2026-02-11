@@ -50,6 +50,13 @@ function extractResultText(result: Awaited<ReturnType<typeof callTool>>): string
   return JSON.stringify(result);
 }
 
+function isInvalidArgError(err: unknown): boolean {
+  return (
+    typeof err === "object" && err !== null &&
+    "code" in err && (err as { code: number }).code === -32602
+  );
+}
+
 async function callToolWithRetry(
   name: string,
   args: Record<string, unknown>,
@@ -60,6 +67,11 @@ async function callToolWithRetry(
       const result = await callTool(name, args);
       return truncate(extractResultText(result));
     } catch (err) {
+      if (isInvalidArgError(err)) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[tool] ${name} invalid arguments: ${msg}`);
+        return `[Tool error: ${msg}]`;
+      }
       lastError = err;
       const delay = TOOL_RETRY_DELAYS[attempt];
       if (delay !== undefined) {
