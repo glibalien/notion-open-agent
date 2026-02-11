@@ -22,7 +22,7 @@ app.post("/chat", async (req, res) => {
   console.log(`[chat] message: ${message}`);
 
   try {
-    const response = await chat(message);
+    const { response } = await chat(message);
     console.log(`[chat] done — ${response.length} chars in ${Date.now() - start}ms`);
     res.json({ response });
   } catch (err) {
@@ -65,7 +65,7 @@ const PORT = parseInt(process.env["PORT"] ?? "3001", 10);
 
 async function main() {
   await connect();
-  console.log("Connected to Notion MCP server.");
+  console.log("Connected to MCP servers.");
 
   const server = app.listen(PORT, () => {
     console.log(`Listening on http://localhost:${PORT}`);

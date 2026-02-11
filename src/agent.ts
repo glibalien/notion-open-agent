@@ -1,6 +1,8 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
 import { listTools, callTool } from "./mcp-client.js";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const FIREWORKS_API_KEY = process.env["FIREWORKS_API_KEY"];
 if (!FIREWORKS_API_KEY) {
@@ -17,6 +19,14 @@ const MAX_ITERATIONS = 10;
 const MAX_RESULT_CHARS = 8000;
 const TOOL_RETRY_DELAYS = [500, 1000];
 
+let systemPrompt: string;
+try {
+  systemPrompt = readFileSync(resolve(process.cwd(), "system-prompt.txt"), "utf-8").trim();
+} catch {
+  systemPrompt = "You are a helpful assistant with access to tools.";
+  console.warn("[agent] system-prompt.txt not found, using default system prompt");
+}
+
 let cachedTools: ChatCompletionTool[] | null = null;
 
 async function getTools(): Promise<ChatCompletionTool[]> {
@@ -26,7 +36,7 @@ async function getTools(): Promise<ChatCompletionTool[]> {
   cachedTools = mcpTools.map((tool) => ({
     type: "function" as const,
     function: {
-      name: tool.name,
+      name: tool.namespacedName,
       description: tool.description ?? "",
       parameters: tool.inputSchema,
     },
@@ -97,12 +107,26 @@ function synthesizeResponse(
   return `Here's what I found for "${userMessage}":\n\n${parts.join("\n\n")}`;
 }
 
-export async function chat(userMessage: string): Promise<string> {
+export interface ChatResult {
+  response: string;
+  history: ChatCompletionMessageParam[];
+}
+
+export async function chat(
+  userMessage: string,
+  history?: ChatCompletionMessageParam[],
+): Promise<ChatResult> {
   const tools = await getTools();
 
-  const messages: ChatCompletionMessageParam[] = [
-    { role: "user", content: userMessage },
-  ];
+  const messages: ChatCompletionMessageParam[] = [];
+
+  if (history && history.length > 0) {
+    messages.push(...history);
+  } else {
+    messages.push({ role: "system", content: systemPrompt });
+  }
+
+  messages.push({ role: "user", content: userMessage });
 
   const collectedToolResults: Array<{ name: string; result: string }> = [];
 
@@ -118,7 +142,9 @@ export async function chat(userMessage: string): Promise<string> {
       const detail = err instanceof Error ? err.message : String(err);
       if (iteration > 0 && detail.includes("400")) {
         console.error(`[agent] DeepSeek 400 error on iteration ${iteration + 1}, synthesizing response from tool results`);
-        return synthesizeResponse(userMessage, collectedToolResults);
+        const synth = synthesizeResponse(userMessage, collectedToolResults);
+        messages.push({ role: "assistant", content: synth });
+        return { response: synth, history: messages };
       }
       throw new Error(`Fireworks API error: ${detail}`);
     }
@@ -132,7 +158,10 @@ export async function chat(userMessage: string): Promise<string> {
     messages.push(assistantMessage);
 
     if (!assistantMessage.tool_calls?.length) {
-      return assistantMessage.content ?? "";
+      return {
+        response: assistantMessage.content ?? "",
+        history: messages,
+      };
     }
 
     for (const toolCall of assistantMessage.tool_calls) {
@@ -166,12 +195,9 @@ export async function chat(userMessage: string): Promise<string> {
 
       collectedToolResults.push({ name: toolCall.function.name, result: resultText });
     }
-
-    messages.push({
-      role: "system",
-      content: "Use the tool results above to answer the user's question. Do not call any more tools unless absolutely necessary.",
-    });
   }
 
-  return "[Agent stopped — reached maximum iteration limit]";
+  const limitMsg = "[Agent stopped — reached maximum iteration limit]";
+  messages.push({ role: "assistant", content: limitMsg });
+  return { response: limitMsg, history: messages };
 }
