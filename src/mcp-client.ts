@@ -21,15 +21,38 @@ export async function connect(): Promise<Client> {
   return client;
 }
 
-export async function listTools() {
+async function reconnect(): Promise<void> {
+  try {
+    if (transport) await transport.close();
+  } catch {
+    // ignore cleanup errors
+  }
+  client = null;
+  transport = null;
+  await connect();
+}
+
+async function withReconnect<T>(operation: (c: Client) => Promise<T>): Promise<T> {
   const c = await connect();
-  const result = await c.listTools();
-  return result.tools;
+  try {
+    return await operation(c);
+  } catch (err) {
+    console.error("[mcp] Operation failed, attempting reconnect...", err);
+    await reconnect();
+    const c2 = await connect();
+    return await operation(c2);
+  }
+}
+
+export async function listTools() {
+  return withReconnect(async (c) => {
+    const result = await c.listTools();
+    return result.tools;
+  });
 }
 
 export async function callTool(name: string, args: Record<string, unknown>) {
-  const c = await connect();
-  return c.callTool({ name, arguments: args });
+  return withReconnect((c) => c.callTool({ name, arguments: args }));
 }
 
 export async function disconnect() {
