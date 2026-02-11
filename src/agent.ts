@@ -72,12 +72,27 @@ async function callToolWithRetry(
   return `[Tool call failed after ${TOOL_RETRY_DELAYS.length + 1} attempts: ${msg}]`;
 }
 
+function synthesizeResponse(
+  userMessage: string,
+  toolResults: Array<{ name: string; result: string }>,
+): string {
+  if (toolResults.length === 0) {
+    return "[Unable to complete request — no tool results were collected before the error occurred]";
+  }
+  const parts = toolResults.map(
+    (r) => `## ${r.name}\n${r.result}`,
+  );
+  return `Here's what I found for "${userMessage}":\n\n${parts.join("\n\n")}`;
+}
+
 export async function chat(userMessage: string): Promise<string> {
   const tools = await getTools();
 
   const messages: ChatCompletionMessageParam[] = [
     { role: "user", content: userMessage },
   ];
+
+  const collectedToolResults: Array<{ name: string; result: string }> = [];
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     let response: OpenAI.Chat.Completions.ChatCompletion;
@@ -89,6 +104,10 @@ export async function chat(userMessage: string): Promise<string> {
       });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
+      if (iteration > 0 && detail.includes("400")) {
+        console.error(`[agent] DeepSeek 400 error on iteration ${iteration + 1}, synthesizing response from tool results`);
+        return synthesizeResponse(userMessage, collectedToolResults);
+      }
       throw new Error(`Fireworks API error: ${detail}`);
     }
 
@@ -132,7 +151,14 @@ export async function chat(userMessage: string): Promise<string> {
         tool_call_id: toolCall.id,
         content: resultText,
       });
+
+      collectedToolResults.push({ name: toolCall.function.name, result: resultText });
     }
+
+    messages.push({
+      role: "system",
+      content: "Use the tool results above to answer the user's question. Do not call any more tools unless absolutely necessary.",
+    });
   }
 
   return "[Agent stopped — reached maximum iteration limit]";
