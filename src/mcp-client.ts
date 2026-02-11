@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { McpError } from "@modelcontextprotocol/sdk/types.js";
 
 const NOTION_MCP_URL = process.env["NOTION_MCP_URL"] ?? "https://mcp.notion.com/mcp";
 
@@ -37,7 +38,8 @@ async function withReconnect<T>(operation: (c: Client) => Promise<T>): Promise<T
   try {
     return await operation(c);
   } catch (err) {
-    console.error("[mcp] Operation failed, attempting reconnect...", err);
+    if (err instanceof McpError) throw err;
+    console.error("[mcp] Connection error, attempting reconnect...", err);
     await reconnect();
     const c2 = await connect();
     return await operation(c2);
