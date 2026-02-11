@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Does
 
-notion-open-agent is a local HTTP API server that bridges DeepSeek V3.1 (via Fireworks.ai's OpenAI-compatible API) to Notion's cloud MCP server. It spawns `mcp-remote` as a subprocess to connect to Notion MCP via stdio transport, runs an agentic tool-calling loop against Fireworks, and exposes the result over Express HTTP endpoints.
+notion-open-agent is a local agent that bridges DeepSeek V3.1 (via Fireworks.ai's OpenAI-compatible API) to MCP servers (currently Notion). It provides both an HTTP API and an interactive TUI for multi-turn conversations with tool-calling capabilities.
 
 ## Commands
 
-- `npm start` — Run the server (uses tsx, no build step needed)
-- `npx tsx src/test-connection.ts` — Test MCP connection and list available Notion tools
+- `npm start` — Run the HTTP server (uses tsx, no build step needed)
+- `npm run chat` — Run the interactive TUI chat
+- `npx tsx src/test-connection.ts` — Test MCP connections and list available tools
 - `npx tsc --noEmit` — Type-check without emitting
 
 No test framework is configured yet.
@@ -17,16 +18,28 @@ No test framework is configured yet.
 ## Architecture
 
 ```
-HTTP Client → Express (server.ts) → Agent Loop (agent.ts) → Fireworks/DeepSeek V3.1
-                                          ↕
-                                    MCP Client (mcp-client.ts) → mcp-remote subprocess → Notion MCP
+HTTP Client → Express (server.ts) ──→ Agent Loop (agent.ts) → Fireworks/DeepSeek V3.1
+TUI (tui.ts) ───────────────────────→       ↕
+                                      MCP Registry (mcp-client.ts)
+                                        ├── notion → mcp-remote → Notion MCP
+                                        └── (future servers)
 ```
 
-**server.ts** — Entry point. Loads dotenv, sets up Express with three endpoints (`POST /chat`, `GET /tools`, `POST /tool/:name`), request logging middleware, and graceful shutdown.
+**server.ts** — HTTP entry point. Loads dotenv, sets up Express with three endpoints (`POST /chat`, `GET /tools`, `POST /tool/:name`), request logging middleware, and graceful shutdown.
 
-**agent.ts** — Agentic loop. Fetches MCP tool schemas, converts them to OpenAI function-calling format, sends user messages to DeepSeek via Fireworks, executes any returned tool calls via MCP, and loops until the model produces a final text response. Exports `chat(userMessage)`. Includes a system hint after tool results to discourage unnecessary follow-up tool calls (works around a DeepSeek multi-turn token issue on Fireworks).
+**tui.ts** — Interactive terminal entry point. readline-based chat loop with multi-turn conversation history. Supports `/quit` and `/clear` commands.
 
-**mcp-client.ts** — Singleton MCP connection. Spawns `npx mcp-remote <url>` as a child process, connects via the MCP SDK's `StdioClientTransport`. Exports `connect()`, `listTools()`, `callTool()`, `disconnect()`. The `mcp-remote` process handles Notion OAuth automatically (browser-based auth on first run, cached tokens thereafter).
+**agent.ts** — Agentic tool-calling loop. Loads system prompt from `system-prompt.txt`. Converts MCP tool schemas to OpenAI function-calling format (using namespaced tool names). Loops: send messages to DeepSeek, execute tool calls, feed results back. Exports `chat(userMessage, history?)` returning `ChatResult { response, history }` for multi-turn support.
+
+**mcp-client.ts** — Multi-server MCP registry. Loads server configs from `mcp-servers.json`. Manages named connections with per-server reconnect logic. Tools are namespaced as `serverName__toolName` (split on first `__` only to handle tool names containing `__`). Exports `connect()`, `listTools()`, `callTool()`, `disconnect()`.
+
+## Configuration Files
+
+**`mcp-servers.json`** — Registry of MCP servers. Each entry has a name, command, and args. Adding a new MCP server is just adding an entry here.
+
+**`system-prompt.txt`** — System prompt sent to the LLM. Guides efficient tool usage. Loaded at startup with a fallback default if missing.
+
+**`.env`** — Environment variables loaded via dotenv.
 
 ## Robustness
 
@@ -47,7 +60,6 @@ HTTP Client → Express (server.ts) → Agent Loop (agent.ts) → Fireworks/Deep
 Loaded from `.env` via dotenv:
 
 - `FIREWORKS_API_KEY` (required) — Fireworks.ai API key
-- `NOTION_MCP_URL` (optional) — defaults to `https://mcp.notion.com/mcp`
 - `PORT` (optional) — defaults to `3001`
 
 ## TypeScript
